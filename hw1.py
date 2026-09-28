@@ -53,25 +53,16 @@ def image_data_url(path: Path) -> str:
 
 
 def build_chain() -> Any:
-    """Create and return your LangChain chain once.
-
-    Chain: ChatPromptTemplate | ChatDeepSeek | JsonOutputParser
-    The model only READS three raw numbers per receipt; all arithmetic
-    is done in Python inside answer_queries().
-    """
     from langchain_core.prompts import ChatPromptTemplate
     from langchain_core.output_parsers import JsonOutputParser
     from langchain_deepseek import ChatDeepSeek
 
-    # No max_tokens limit: this model reasons before answering, and a small
-    # token cap can leave zero room for the JSON output (empty response).
     model = ChatDeepSeek(
         model="deepseek-v4-flash-vision-exp",
         temperature=0,
     )
 
-    # NOTE: literal curly braces in the prompt MUST be escaped as {{ }}
-    # because ChatPromptTemplate treats {name} as an input variable.
+
     system_prompt = (
         "You are a precise receipt-reading assistant. You are shown one "
         "supermarket receipt image. Read it carefully and return STRICT JSON "
@@ -113,16 +104,8 @@ def build_chain() -> Any:
 
 
 def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
-    """Run the chain on every receipt and sum the two amounts.
-
-    Per-receipt extraction runs in parallel via chain.batch; aggregation
-    is deterministic Decimal arithmetic; a failing receipt is retried once
-    and otherwise skipped with a warning, so the program always finishes
-    and always writes results.csv.
-    """
 
     def to_amount(value: Any) -> Decimal | None:
-        """Convert one model field to a positive Decimal, or None."""
         if value is None or value == "" or value == "null":
             return None
         try:
@@ -137,8 +120,6 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
     total_no_discount = Decimal("0")
 
     for path, result in zip(images, results):
-        # One retry for receipts whose parallel call failed or whose
-        # output was not valid JSON.
         if isinstance(result, Exception) or not isinstance(result, dict):
             print(f"[retry] {path.name}: {result!r}")
             try:
@@ -151,7 +132,6 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
         subtotal = to_amount(result.get("subtotal"))
         discounts = to_amount(result.get("discounts")) or Decimal("0")
 
-        # Graceful fallbacks: never crash on a missing field.
         if paid is None and subtotal is None:
             print(f"[skip] {path.name}: unusable output {result!r}")
             continue
@@ -165,10 +145,8 @@ def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
             f"subtotal={subtotal} discounts={discounts}"
         )
         total_paid += paid
-        # Query 2 = SUBTOTAL + discounts added back; ROUNDING is never added.
         total_no_discount += subtotal + discounts
 
-    # Exactly one number per response, as the grader requires.
     return {
         QUERY_1: f"HK${total_paid:.2f}",
         QUERY_2: f"HK${total_no_discount:.2f}",
