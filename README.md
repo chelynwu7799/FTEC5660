@@ -71,9 +71,8 @@ avoids LLM arithmetic errors, and each final response is formatted as a single
 HK$xxxx.xx amount so the automatic grader sees exactly one number. On the
 public test set both queries are marked correct.
 
-## Homework 1 solution:
 
-### Chain design
+## Chain design
 
 ```mermaid
 flowchart LR
