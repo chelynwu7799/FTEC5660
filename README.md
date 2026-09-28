@@ -54,7 +54,7 @@ homework runner.
 My design separates perception from computation: the vision model only
 reads three raw numbers off each receipt, while all arithmetic is done
 deterministically in Python. The chain built in build_chain() is
-ChatPromptTemplate | ChatDeepSeek | JsonOutputParser, using the required
+ChatPromptTemplate, ChatDeepSeek, JsonOutputParser, using the required
 deepseek-v4-flash-vision-exp model at temperature 0. Each receipt image is
 sent as a base64 data URL in a multimodal human message, and the prompt asks
 for strict JSON with three fields: final_payment (the amount actually paid,
