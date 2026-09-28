@@ -55,32 +55,124 @@ def image_data_url(path: Path) -> str:
 def build_chain() -> Any:
     """Create and return your LangChain chain once.
 
-    Suggested imports:
-        from langchain_core.prompts import ChatPromptTemplate
-        from langchain_deepseek import ChatDeepSeek
-
-    Use the vision-capable DeepSeek Flash model named
-    ``deepseek-v4-flash-vision-exp``. The API key is loaded from .env.
+    Chain: ChatPromptTemplate | ChatDeepSeek | JsonOutputParser
+    The model only READS three raw numbers per receipt; all arithmetic
+    is done in Python inside answer_queries().
     """
-    ### YOUR CODE HERE
-    return None
+    from langchain_core.prompts import ChatPromptTemplate
+    from langchain_core.output_parsers import JsonOutputParser
+    from langchain_deepseek import ChatDeepSeek
+
+    # No max_tokens limit: this model reasons before answering, and a small
+    # token cap can leave zero room for the JSON output (empty response).
+    model = ChatDeepSeek(
+        model="deepseek-v4-flash-vision-exp",
+        temperature=0,
+    )
+
+    # NOTE: literal curly braces in the prompt MUST be escaped as {{ }}
+    # because ChatPromptTemplate treats {name} as an input variable.
+    system_prompt = (
+        "You are a precise receipt-reading assistant. You are shown one "
+        "supermarket receipt image. Read it carefully and return STRICT JSON "
+        "with exactly these three keys and nothing else:\n"
+        '  "final_payment": the amount actually paid — the final total AFTER '
+        "the ROUNDING line (the number printed next to the payment method "
+        "such as OCTOPUS / CASH / VISA, or the last grand total).\n"
+        '  "subtotal": the SUBTOTAL line — after all discounts but BEFORE '
+        "rounding. If no subtotal is printed, use the total before rounding.\n"
+        '  "discounts": the sum of EVERY discount / promotion / coupon / '
+        "member / app / packaging-damage / percentage-off line, added "
+        "together as one POSITIVE number. Do NOT include the ROUNDING line "
+        "here. Use 0 if there are none.\n"
+        "All values must be plain numbers (no currency symbol, no commas). "
+        'Example: {{"final_payment": 102.30, "subtotal": 102.31, '
+        '"discounts": 5.39}}'
+    )
+
+    prompt = ChatPromptTemplate.from_messages(
+        [
+            ("system", system_prompt),
+            (
+                "human",
+                [
+                    {
+                        "type": "text",
+                        "text": "Here is the receipt. Return the JSON now.",
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "{image_url}"},
+                    },
+                ],
+            ),
+        ]
+    )
+
+    return prompt | model | JsonOutputParser()
 
 
 def answer_queries(chain: Any, images: list[Path]) -> dict[str, Any]:
-    """Run your chain and return one response for each exact query string.
+    """Run the chain on every receipt and sum the two amounts.
 
-    ``images`` contains every receipt in the selected folder. A valid return
-    value looks like:
-
-        {QUERY_1: "HK$123.40", QUERY_2: "HK$150.00"}
-
-    Use the provided ``image_data_url(path)`` helper to put local images in
-    multimodal human messages. LangChain's ``batch`` method is one simple way
-    to process independent receipt-extraction prompts in parallel.
+    Per-receipt extraction runs in parallel via chain.batch; aggregation
+    is deterministic Decimal arithmetic; a failing receipt is retried once
+    and otherwise skipped with a warning, so the program always finishes
+    and always writes results.csv.
     """
-    ### YOUR CODE HERE
-    _ = (chain, images)
-    return {QUERY_1: DUMMY_RESPONSE, QUERY_2: DUMMY_RESPONSE}
+
+    def to_amount(value: Any) -> Decimal | None:
+        """Convert one model field to a positive Decimal, or None."""
+        if value is None or value == "" or value == "null":
+            return None
+        try:
+            return Decimal(str(value).replace(",", "")).copy_abs()
+        except InvalidOperation:
+            return None
+
+    inputs = [{"image_url": image_data_url(path)} for path in images]
+    results = chain.batch(inputs, return_exceptions=True)
+
+    total_paid = Decimal("0")
+    total_no_discount = Decimal("0")
+
+    for path, result in zip(images, results):
+        # One retry for receipts whose parallel call failed or whose
+        # output was not valid JSON.
+        if isinstance(result, Exception) or not isinstance(result, dict):
+            print(f"[retry] {path.name}: {result!r}")
+            try:
+                result = chain.invoke({"image_url": image_data_url(path)})
+            except Exception as exc:
+                print(f"[skip] {path.name}: {exc}")
+                continue
+
+        paid = to_amount(result.get("final_payment"))
+        subtotal = to_amount(result.get("subtotal"))
+        discounts = to_amount(result.get("discounts")) or Decimal("0")
+
+        # Graceful fallbacks: never crash on a missing field.
+        if paid is None and subtotal is None:
+            print(f"[skip] {path.name}: unusable output {result!r}")
+            continue
+        if paid is None:
+            paid = subtotal
+        if subtotal is None:
+            subtotal = paid
+
+        print(
+            f"[ok] {path.name}: paid={paid} "
+            f"subtotal={subtotal} discounts={discounts}"
+        )
+        total_paid += paid
+        # Query 2 = SUBTOTAL + discounts added back; ROUNDING is never added.
+        total_no_discount += subtotal + discounts
+
+    # Exactly one number per response, as the grader requires.
+    return {
+        QUERY_1: f"HK${total_paid:.2f}",
+        QUERY_2: f"HK${total_no_discount:.2f}",
+    }
 
 
 # Everything below is provided runner/scoring code. No edits are needed.
